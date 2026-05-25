@@ -8,10 +8,32 @@ jobs:
       - name: Checkout Code
         uses: actions/checkout@v4
 
-      - name: Unpack Project Files
+      - name: Unpack and Relocate Everything
         run: |
-          Expand-Archive -Path *.zip -DestinationPath . -Force
+          # 1. Unzip the file cleanly into a temporary folder
+          Expand-Archive -Path *.zip -DestinationPath ./unpacked_temp -Force
+          
+          # 2. Find the exact folder containing your package.json
+          $pkgFile = Get-ChildItem -Path ./unpacked_temp -Filter package.json -Recurse | Select-Object -First 1
+          if ($pkgFile -eq $null) { throw "Could not find package.json inside your zip file!" }
+          
+          # 3. Get the path to that inner project folder
+          $projectFolder = $pkgFile.Directory.FullName
+          echo "Found project folder at: $projectFolder"
+          
+          # 4. Move every single file and subfolder (like src, public) to the main workspace root
+          Get-ChildItem -Path "$projectFolder\*" -Recurse | Each-Object {
+              $target = $_.FullName.Replace($projectFolder, $pwd.Path)
+              if ($_.PsIsContainer) {
+                  if (!(Test-Path $target)) { New-Item -ItemType Directory -Path $target -Force }
+              } else {
+                  Copy-Item -Path $_.FullName -Destination $target -Force
+              }
+          }
+          
+          # 5. Clean up the zip and temp folder to avoid clutter
           Remove-Item *.zip -ErrorAction SilentlyContinue
+          Remove-Item ./unpacked_temp -Recurse -Force -ErrorAction SilentlyContinue
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
@@ -20,11 +42,12 @@ jobs:
 
       - name: Patch Configuration for Static Export
         run: |
-          # This automatically overwrites and creates a clean next.config.js for static desktop compilation
+          # Create a custom next.config.js built specifically for Next.js 15 desktop apps
           echo "/** @type {import('next').NextConfig} */ const nextConfig = { output: 'export', images: { unoptimized: true }, typescript: { ignoreBuildErrors: true }, eslint: { ignoreDuringBuilds: true } }; module.exports = nextConfig;" > next.config.js
-          
-          # Removes any conflicting next.config.ts file that might override our static rules
           if (Test-Path next.config.ts) { Remove-Item next.config.ts -Force }
+          
+          # Ensure package.json has a baseline name and version so electron-builder doesn't crash
+          node -e "const fs = require('fs'); const pkg = JSON.parse(fs.readFileSync('package.json')); if(!pkg.name) pkg.name = 'wealth-architect'; if(!pkg.version) pkg.version = '1.0.0'; pkg.main = 'main.js'; pkg.build = { appId: 'com.moneygame.wealth', files: ['out/**/*', 'main.js', 'package.json'] }; fs.writeFileSync('package.json', JSON.stringify(pkg, null, 2));"
 
       - name: Build Desktop Application
         run: |
@@ -32,14 +55,13 @@ jobs:
           npm install --legacy-peer-deps
           npm install --save-dev electron electron-builder
           
-          # Inject basic desktop application window configuration
+          # Inject basic desktop launcher configuration
           echo "const { app, BrowserWindow } = require('electron'); const path = require('path'); function createWindow() { const win = new BrowserWindow({ width: 1280, height: 720, autoHideMenuBar: true, webPreferences: { contextIsolation: true } }); win.loadFile(path.join(__dirname, 'out', 'index.html')); } app.whenReady().then(createWindow);" > main.js
           
-          # Modify package.json settings dynamically for building
-          node -e "const fs = require('fs'); const pkg = JSON.parse(fs.readFileSync('package.json')); pkg.main = 'main.js'; pkg.build = { appId: 'com.moneygame.wealth', files: ['out/**/*', 'main.js', 'package.json'] }; fs.writeFileSync('package.json', JSON.stringify(pkg, null, 2));"
-          
-          # Compile the Next.js app and build the portable standalone EXE
+          # Run Next.js static build compile step
           npx next build
+          
+          # Turn it into a standalone Windows app
           npx electron-builder --win portable
           
       - name: Upload Finished EXE
