@@ -22,7 +22,7 @@ jobs:
           echo "Found project folder at: $projectFolder"
           
           # 4. Move every single file and subfolder (like src, public) to the main workspace root
-          Get-ChildItem -Path "$projectFolder\*" -Recurse | Each-Object {
+          Get-ChildItem -Path "$projectFolder\*" -Recurse | ForEach-Object {
               $target = $_.FullName.Replace($projectFolder, $pwd.Path)
               if ($_.PsIsContainer) {
                   if (!(Test-Path $target)) { New-Item -ItemType Directory -Path $target -Force }
